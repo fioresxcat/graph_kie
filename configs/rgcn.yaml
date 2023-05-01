@@ -1,0 +1,5 @@
+channels:
+- 64
+- 32
+- 24
+position_aggregation: concat

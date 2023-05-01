@@ -1,0 +1,33 @@
+data:
+  label_list: invoice
+  train_dir: /data/tungtx2/information_extraction/ie_data/aeon_citimart/train
+  val_dir: /data/tungtx2/information_extraction/ie_data/aeon_citimart/val
+  max_sample: 500
+
+options:
+  model_type: rgcn
+  use_emb: true
+  emb_range: 640
+  more_feature: false
+  sort_bbs: true
+  word_encoder:
+    lang: vi
+    vs: 5000
+    dim: 100
+
+model:
+  dropout_rate: 0.3
+  embedding_range: 640
+  embedding_size: 24
+  text_feature_dim: 114
+  l2_reg: 0.01
+
+training:
+  ckpt_save_dir: /data/tungtx2/information_extraction/graph_kie/ckpt/aeon_citimart/
+  prev_ckpt_path: null
+  base_lr: 0.001
+  optimizer: AdamW
+  num_epoch: 100
+  warmup_ratio: 0.1
+  label_smoothing: 0.05
+
