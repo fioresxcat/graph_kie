@@ -1,13 +1,14 @@
 data:
+  martname: aeon_citimart
   label_list: invoice
   train_dir: /data/tungtx2/information_extraction/ie_data/aeon_citimart/train
   val_dir: /data/tungtx2/information_extraction/ie_data/aeon_citimart/val
+  test_dir: /data/tungtx2/information_extraction/ie_data/aeon_citimart/test
   max_sample: 500
 
 options:
-  model_type: rgcn
+  model_type: gnn_film
   use_emb: true
-  emb_range: 640
   more_feature: false
   sort_bbs: true
   word_encoder:
@@ -17,17 +18,20 @@ options:
 
 model:
   dropout_rate: 0.3
-  embedding_range: 640
-  embedding_size: 24
+  emb_range: 640
+  emb_dim: 24
   text_feature_dim: 114
   l2_reg: 0.01
 
 training:
+  exp_description: film_3_layers
   ckpt_save_dir: /data/tungtx2/information_extraction/graph_kie/ckpt/aeon_citimart/
   prev_ckpt_path: null
   base_lr: 0.001
+  weight_decay: 0.01
   optimizer: AdamW
   num_epoch: 100
+  use_warmup: false
   warmup_ratio: 0.1
   label_smoothing: 0.05
 

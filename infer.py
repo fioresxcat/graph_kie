@@ -6,38 +6,66 @@ import argparse
 import json
 import pdb
 import shutil
-from model import RGCN_Model
-from dataset import GraphDataModule, GraphDataset
 import yaml
 from pathlib import Path
 from my_utils import *
 from label_list import all_label_list
-from sklearn.metrics import classification_report
+from sklearn.metrics import classification_report, confusion_matrix
+import seaborn as sns
 from bpemb import BPEmb
+from PIL import Image
+import matplotlib.pyplot as plt
+from torchmetrics import F1Score, Precision, Recall
 
 
-def load_model(general_cfg, model_cfg, n_classes, ckpt_path=None):
-    model_type = general_cfg['options']['model_type']
-    if model_type == 'rgcn':
-        if ckpt_path is not None:
-            model = RGCN_Model.load_from_checkpoint(
-                        checkpoint_path=ckpt_path,
-                        general_config=general_cfg, 
-                        model_config=model_cfg, 
-                        n_classes=n_classes
-                    )
-        else:
-            model = RGCN_Model(general_config=general_cfg, model_config=model_cfg, n_classes=n_classes)
-    else:
-        raise ValueError(f'Model type {model_type} is not supported yet')    
+def save_result(out_dir, target_names, all_trues, all_preds, err_dict):
+    f1_calc = F1Score(task='multiclass', threshold=0.5, num_classes=len(target_names))
+    precision_calc = Precision(task='multiclass', threshold=0.5, num_classes=len(target_names))
+    recall_calc = Recall(task='multiclass', threshold=0.5, num_classes=len(target_names))
+
+    f1_score = round(f1_calc(torch.tensor(all_preds), torch.tensor(all_trues)).item(), 3)
+    precision = round(precision_calc(torch.tensor(all_preds), torch.tensor(all_trues)).item(), 3)
+    recall = round(recall_calc(torch.tensor(all_preds), torch.tensor(all_trues)).item(), 3)
+    num_err = len([i for i in range(len(all_trues)) if all_trues[i] != all_preds[i]])
+    num_total = len(all_trues)
+    report = classification_report(y_true=all_trues, y_pred=all_preds, target_names=target_names, digits=3)
+    print(report)
+    confuse_matrix = confusion_matrix(y_true=all_trues, y_pred=all_preds)
     
-    return model
+    # visualize confusion matrix and save plot with seaborn
+    plt.figure(figsize=(20, 20))
+    sns.heatmap(confuse_matrix, annot=True, fmt='d', cmap='Blues', xticklabels=target_names, yticklabels=target_names)
+    plt.savefig(os.path.join(out_dir, 'confuse_matrix.png'))
+    
+    with open(os.path.join(out_dir, 'error_dict.json'), 'w') as f:
+        json.dump(err_dict, f)
+    with open(os.path.join(out_dir, 'report.txt'), 'w') as f:
+        f.write(report)
+        f.write('\n')
+        f.write(f'overall f1 score: {f1_score}\n')
+        f.write(f'overall precision: {precision}\n')
+        f.write(f'overall recall: {recall}\n')
+        f.write(f'num_err: {num_err}\n')
+        f.write(f'num_total: {num_total}\n')
+    # write all_trues to txt files
+    with open(os.path.join(out_dir, 'all_trues.txt'), 'w') as f:
+        for true in all_trues:
+            f.write(f'{true}\n')
+    # write all_preds to txt files
+    with open(os.path.join(out_dir, 'all_preds.txt'), 'w') as f:
+        for pred in all_preds:
+            f.write(f'{pred}\n')
+    # write target_names to txt files
+    with open(os.path.join(out_dir, 'target_names.txt'), 'w') as f:
+        for name in target_names:
+            f.write(f'{name}\n')
 
 
 def get_input_from_json(json_fp, word_encoder, use_emb, emb_range):
     with open(json_fp, 'r') as f:
             json_data = json.load(f)
-    img_h, img_w = json_data['imageHeight'], json_data['imageWidth']
+    img_fp = get_img_fp_from_json_fp(json_fp)
+    img_w, img_h = Image.open(img_fp).size
 
     # get node features
     x_indexes = [] # list of all x_indexes of all nodes in graph (each node has an x_index)
@@ -127,6 +155,7 @@ def get_input_from_json(json_fp, word_encoder, use_emb, emb_range):
 
 
 def inference(ckpt_path, src_dir=None, out_dir=None):
+    print(f'Inference with checkpoint {ckpt_path} ...')
     os.makedirs(out_dir, exist_ok=True)
     ckpt_dir = Path(ckpt_path).parent
     with open(os.path.join(ckpt_dir, 'train_cfg.yaml')) as f:
@@ -137,14 +166,15 @@ def inference(ckpt_path, src_dir=None, out_dir=None):
     label_list = all_label_list[general_cfg['data']['label_list']]
     word_encoder = BPEmb(**general_cfg['options']['word_encoder'])
     use_emb = general_cfg['options']['use_emb'],
-    emb_range = general_cfg['options']['emb_range']
+    emb_range = general_cfg['model']['emb_range']
     model = load_model(general_cfg, model_cfg, n_classes=len(label_list), ckpt_path=ckpt_path)
     model.eval()
 
-    json_files = sorted(list(Path(src_dir).rglob('*.json')))
+    json_files = get_list_json(src_dir, max_sample=int(1e4), remove_json_with_no_img=True)
     err_dict = {}
     all_trues, all_preds = [], []
     for i, json_fp in enumerate(json_files):
+        print('json fp: ', json_fp)
         json_data = json.load(open(json_fp))
         _, _, _, _, sorted_indices = sort_json(json_data)
 
@@ -158,11 +188,13 @@ def inference(ckpt_path, src_dir=None, out_dir=None):
         out = model(x_indexes, y_indexes, text_features, edge_index, edge_type)
         preds = torch.argmax(out, dim=-1)
 
-        # modify json_label
+        
         for i, shape in enumerate(json_data['shapes']):
-            pred_label = label_list[preds[sorted_indices[i]]]
-            json_data['shapes'][i]['label'] = 'text'
-            json_data['shapes'][i]['label'] = pred_label
+            try:
+                pred_label = label_list[preds[sorted_indices[i]]]
+            except:
+                pdb.set_trace()
+            
             if pred_label != shape['label']:
                 err_info = {
                     'box': [int(coord) for pt in shape['points'] for coord in pt],
@@ -175,22 +207,25 @@ def inference(ckpt_path, src_dir=None, out_dir=None):
                 else:
                     err_dict[str(json_fp)].append(err_info) 
 
-            all_trues.append(label_list.index(shape['label']))
+            try:
+                all_trues.append(label_list.index(shape['label']))
+            except:
+                all_trues.append(label_list.index('text'))
+
             all_preds.append(label_list.index(pred_label))
+
+            # modify json_label
+            json_data['shapes'][i]['label'] = 'text'
+            json_data['shapes'][i]['label'] = pred_label
 
         # save
         with open(os.path.join(out_dir, json_fp.name), 'w') as f:
             json.dump(json_data, f)
-        shutil.copy(json_fp.with_suffix('.jpg'), out_dir)
+        shutil.copy(get_img_fp_from_json_fp(json_fp), out_dir)
         print(f'Done {json_fp.name}')
     
-    target_names = [label_list[i] for i in sorted(list(set(all_trues)))]
-    report = classification_report(y_true=all_trues, y_pred=all_preds, target_names=target_names)
-    print(report)
-    with open(os.path.join(out_dir, 'error_dict.json'), 'w') as f:
-        json.dump(err_dict, f)
-    with open(os.path.join(out_dir, 'report.txt'), 'w') as f:
-        f.write(report)
+    target_names = [label_list[i] for i in sorted(list(set(all_trues+all_preds)))]
+    save_result(out_dir, target_names, all_trues, all_preds, err_dict)
 
 
 if __name__ == '__main__':

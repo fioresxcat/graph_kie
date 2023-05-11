@@ -14,43 +14,56 @@ from typing import Optional, Tuple, List
 import torch
 import pytorch_lightning as pl
 from label_list import all_label_list
+from PIL import Image
 
 
 
 
 class GraphDataset(Dataset):
     def __init__(self, general_cfg, mode='train'):
-        self.config = general_cfg
+        self.general_cfg = general_cfg
         self.data_dir = general_cfg['data']['train_dir'] if mode == 'train' else general_cfg['data']['val_dir']
         self.n_labels = len(all_label_list[general_cfg['data']['label_list']])
         self.label_list = all_label_list[general_cfg['data']['label_list']]
-        self.json_files = get_list_json(self.data_dir, general_cfg['data']['max_sample'])
+        self.json_files = get_list_json(self.data_dir, max_sample=general_cfg['data']['max_sample'], remove_json_with_no_img=True)
         self.mode = mode
         self.use_emb = general_cfg['options']['use_emb']
         self.bpemb = get_word_encoder(general_cfg['options']['word_encoder'])
-        self.emb_range = general_cfg['model']['embedding_range']
+        self.emb_range = general_cfg['model']['emb_range']
 
         self.print_dataset_info()
         self.invalid_labels = self.check_label_valid()
 
 
     def print_dataset_info(self):
-        print(f'Dataset info: {len(self.json_files)} json files, {self.n_labels} labels')
-        print(f'Label list: {self.label_list}')
-        
+        print('----------------------- Dataset Info ---------------------------')
+        print('dir: ', self.data_dir)
+        print('num json files: ', len(self.json_files))
+        print('num labels: ', self.n_labels)
+        print('label list: ', self.label_list)
+
+    
+    def save_data_info(self, out_path):
+        with open(out_path, 'w') as f:
+            f.write(f'dir: {self.data_dir}\n')
+            f.write(f'num json files: {len(self.json_files)}\n')
+            f.write(f'num labels: {self.n_labels}\n')
+            f.write(f'label list: {self.label_list}')
+
     
     def check_label_valid(self):
-        print('------------------------ Checking labels ----------------------------')
         ls_json_fp = list(Path(self.data_dir).rglob('*.json'))
         invalid_labels = []
         for jp in ls_json_fp:
             json_data = json.load(open(jp))
             for shape in json_data['shapes']:
-                if shape['label'] not in all_label_list[self.config['data']['label_list']]:
-                    # print(f'{jp} has outlier label: ', shape['label'])
+                if shape['label'] not in all_label_list[self.general_cfg['data']['label_list']]:
+                    print(f'{jp} has outlier label: ', shape['label'])
                     invalid_labels.append(shape['label'])
         if len(invalid_labels) == 0:
-            print('All labels are valid !')
+            print('All labels are valid!')
+        else:
+            print('Some labels are invalid!')
 
         return invalid_labels
 
@@ -63,7 +76,8 @@ class GraphDataset(Dataset):
         json_fp = self.json_files[index]
         with open(json_fp, 'r') as f:
             json_data = json.load(f)
-        img_h, img_w = json_data['imageHeight'], json_data['imageWidth']
+        img_fp = get_img_fp_from_json_fp(json_fp)
+        img_w, img_h = Image.open(img_fp).size
 
         # get node features
         nodes = []  # list of all node in graph
@@ -71,12 +85,15 @@ class GraphDataset(Dataset):
         y_indexes = [] # list of all y_indexes of all nodes in graph (each node has an y_index)
         text_features = [] # list of all features of all nodes in graph (each node has a feature)
 
+        # filter out all shape with num points # 4
+        # json_data['shapes'] = [shape for shape in json_data['shapes'] if len(shape['points']) == 4]
+
         if self.mode == 'train':
             # random drop out boxes
             if len(json_data['shapes']) > 5 and np.random.rand() < 0.3:
                 json_data['shapes'] = random_drop_shape(
                     json_data['shapes'], 
-                    num_general_drop=np.random.randint(0, len(json_data['shapes'])//10),
+                    num_general_drop=min(10, np.random.randint(0, len(json_data['shapes'])//15)),
                     num_field_drop=np.random.randint(3, 10)
                 )
             # augment pad
@@ -103,8 +120,8 @@ class GraphDataset(Dataset):
 
                 if self.use_emb: 
                     # rescale coord at width=self.emb_range
-                    x_index = [int(xmin * self.emb_range / img_w), int(xmax * self.emb_range / img_w), int((xmax - xmin) * self.emb_range / img_w)]
-                    y_index = [int(ymin * self.emb_range / img_h), int(ymax * self.emb_range / img_h), int((ymax - ymin) * self.emb_range / img_h)]
+                    x_index = [int(xmin * 1. / img_w * self.emb_range), int(xmax * 1. / img_w * self.emb_range), int((xmax - xmin) * 1. / img_w * self.emb_range)]
+                    y_index = [int(ymin * 1. / img_h * self.emb_range), int(ymax * 1. / img_h * self.emb_range), int((ymax - ymin) * 1. / img_h * self.emb_range)]
                 else:
                     # normalize in rnage(0, 1)
                     x_index = [float(xmin * 1.0 / img_w), float(xmax * 1.0 / img_w), float((xmax - xmin) * 1.0 / img_w)]
@@ -180,6 +197,8 @@ class GraphDataset(Dataset):
         edges = torch.unique(edges, dim=0, return_inverse=False)   # remove duplicate rows
         edge_index, edge_type = edges[:, :2], edges[:, -1]
 
+        # print('x index: ', x_indexes)
+        # print('y index: ', y_indexes)
 
         return torch.tensor(x_indexes, dtype=torch.int if self.use_emb else torch.float),  \
                torch.tensor(y_indexes, dtype=torch.int if self.use_emb else torch.float), \
@@ -187,6 +206,8 @@ class GraphDataset(Dataset):
                edge_index.t().to(torch.int64), \
                edge_type, \
                torch.tensor(labels).type(torch.LongTensor)
+
+
 
 
 
@@ -205,6 +226,8 @@ class GraphDataModule(pl.LightningDataModule):
 
     def val_dataloader(self):
         return DataLoader(self.val_ds, batch_size=None, shuffle=False, num_workers=8)
+    
+
 
 
 if __name__ == '__main__':

@@ -8,6 +8,82 @@ import unidecode
 from bpemb import BPEmb
 from pathlib import Path
 from typing import List, Tuple
+import copy
+from model import *
+
+DATA_DICT = {
+    'aeon_citimart': {
+        'train_dir': '../ie_data/aeon_citimart/train',
+        'val_dir': '../ie_data/aeon_citimart/val',
+        'test_dir': '../ie_data/aeon_citimart/test',
+    },
+    'aeon_combined': {
+        'train_dir': '../ie_data/aeon_combined/train',
+        'val_dir': '../ie_data/aeon_combined/val',
+        'test_dir': '../ie_data/aeon_combined/test',
+
+    },
+    'brg': {
+        'train_dir': '../ie_data/brg/train',
+        'val_dir': '../ie_data/brg/val',
+        'test_dir': '../ie_data/brg/test',
+
+    },
+    'coopmart_combined_new_out_2': {
+        'train_dir': '../ie_data/coopmart_combined_new_out_2/train_drop_unit_price',
+        'val_dir': '../ie_data/coopmart_combined_new_out_2/val_drop_unit_price',
+        'test_dir': '../ie_data/coopmart_combined_new_out_2/test_drop_unit_price',
+
+    },
+    'emart': {
+        'train_dir': '../ie_data/emart/train',
+        'val_dir': '../ie_data/emart/val',
+        'test_dir': '../ie_data/emart/test',
+
+    },
+    'fujimart': {
+        'train_dir': '../ie_data/fujimart/train',
+        'val_dir': '../ie_data/fujimart/val',
+        'test_dir': '../ie_data/fujimart/test',
+
+    },
+    'lotte-drop-0.4': {
+        'train_dir': '../ie_data/lotte-drop-0.4/train',
+        'val_dir': '../ie_data/lotte-drop-0.4/val',
+        'test_dir': '../ie_data/lotte-drop-0.4/test',
+
+    },
+    'satra': {
+        'train_dir': '../ie_data/satra/train',
+        'val_dir': '../ie_data/satra/val',
+        'test_dir': '../ie_data/satra/test',
+
+    },
+    'tgs': {
+        'train_dir': '../ie_data/tgs/train',
+        'val_dir': '../ie_data/tgs/val',
+        'test_dir': '../ie_data/tgs/test',
+
+    },
+    'winmart_combined': {
+        'train_dir': '../ie_data/winmart_combined/train',
+        'val_dir': '../ie_data/winmart_combined/val',
+        'test_dir': '../ie_data/winmart_combined/test'
+
+    },
+    'bigc_old': {
+        'train_dir': '../ie_data/bigc_old/train',
+        'val_dir': '../ie_data/bigc_old/val',
+        'test_dir': '../ie_data/bigc_old/test',
+
+    },
+    'mega_2022': {
+        'train_dir': '../ie_data/mega_2022/train',
+        'val_dir': '../ie_data/mega_2022/val',
+        'test_dir': '../ie_data/mega_2022/test'
+
+    },
+}
 
 
 uc = {
@@ -87,6 +163,36 @@ uc = {
 }
 
 
+SUPPORTED_MODEL = {
+    'rgcn': RGCN_Model,
+    'gatv2': GATv2_Model,
+    'gnn_film': GNN_FiLM_Model
+}
+
+
+def load_model(general_cfg, model_cfg, n_classes, ckpt_path=None):
+    model_type = general_cfg['options']['model_type']
+    if model_type not in SUPPORTED_MODEL:
+        raise ValueError(f'Model type {model_type} is not supported yet')
+    
+    if ckpt_path is not None:
+        model = SUPPORTED_MODEL[model_type].load_from_checkpoint(
+                    checkpoint_path=ckpt_path,
+                    general_cfg=general_cfg, 
+                    model_cfg=model_cfg, 
+                    n_classes=n_classes
+                )
+    else:
+        model = SUPPORTED_MODEL[model_type](
+            general_cfg=general_cfg, 
+            model_cfg=model_cfg, 
+            n_classes=n_classes
+        )
+    
+    return model
+
+
+
 def remove_accent(text):
     return unidecode.unidecode(text)
 
@@ -160,19 +266,20 @@ def sort_json(json_data):
         x2, y2 = shape['points'][1]  # tr
         x3, y3 = shape['points'][2]  # br
         x4, y4 = shape['points'][3]  # bl
-        bbs.append(tuple(int(i) for i in (x1,y1,x2,y2,x3,y3,x4,y4)))
+        bb = tuple(int(i) for i in (x1,y1,x2,y2,x3,y3,x4,y4))
+        bbs.append(bb)
         labels.append(shape['label'])
         texts.append(shape['text'])
 
     bb2label = dict(zip(bbs, labels))   # theo thu tu truyen vao trong data['shapes']
     bb2text = dict(zip(bbs, texts))
-    bb2idx_original = {tuple(x): idx for idx, x in enumerate(bbs)}   # theo thu tu truyen vao trong data['shapes']
-    rbbs = row_bbs(bbs)
+    bb2idx_original = {x: idx for idx, x in enumerate(bbs)}   # theo thu tu truyen vao trong data['shapes']
+    rbbs = row_bbs(copy.deepcopy(bbs))
     sorted_bbs = [bb for row in rbbs for bb in row]  # theo thu tu tu trai sang phai, tu tren xuong duoi
-    bbs2idx_sorted = {tuple(x): idx for idx, x in enumerate(sorted_bbs)}   # theo thu tu tu trai sang phai, tu tren xuong duoi
-    sorted_indices = [bbs2idx_sorted[tuple(bb)] for bb in bb2idx_original.keys()]
+    bb2idx_sorted = {tuple(x): idx for idx, x in enumerate(sorted_bbs)}   # theo thu tu tu trai sang phai, tu tren xuong duoi
+    sorted_indices = [bb2idx_sorted[bb] for bb in bb2idx_original.keys()]
 
-    return bb2label, bb2text, rbbs, bbs2idx_sorted, sorted_indices
+    return bb2label, bb2text, rbbs, bb2idx_sorted, sorted_indices
 
 
 
@@ -184,6 +291,15 @@ def unsign(text):
         else:
             unsign_text += c
     return unsign_text
+
+
+def get_img_fp_from_json_fp(json_fp: Path):
+    ls_ext = ['.jpg', '.png', '.jpeg', '.JPG', '.PNG', '.JPEG']
+    for ext in ls_ext:
+        img_fp = json_fp.with_suffix(ext)
+        if img_fp.exists():
+            return img_fp
+    return None
 
 
 def augment_text(text):
@@ -227,9 +343,10 @@ def augment_box(xmin, ymin, xmax, ymax, img_w, img_h, percent=5):
 
 
 
-def get_list_json(data_dir: str, max_sample=int(1e4), shuffle=False):
-    print('max sample: ', max_sample)
+def get_list_json(data_dir: str, max_sample=int(1e4), remove_json_with_no_img=True, shuffle=False):
     ls_json_fp = sorted(list(Path(data_dir).rglob('*.json')))
+    if remove_json_with_no_img:
+        ls_json_fp = [fp for fp in ls_json_fp if get_img_fp_from_json_fp(fp) is not None]
     if shuffle:
         np.random.shuffle(ls_json_fp)
 
@@ -243,7 +360,7 @@ def random_drop_shape(shapes: List, num_general_drop: int, num_field_drop: int, 
     else:   # chi drop non-text
         non_text_indices = [i for i, shape in enumerate(shapes) if shape['label'] != outlier_label]
         if len(non_text_indices) > 5:
-            ls_idx2drop = np.random.choice(non_text_indices, min(num_field_drop, len(non_text_indices)//3))
+            ls_idx2drop = np.random.choice(non_text_indices, min(num_field_drop, len(non_text_indices)//8))
     shapes = [shape for i, shape in enumerate(shapes) if i not in ls_idx2drop]
 
     return shapes
@@ -324,8 +441,9 @@ def get_word_encoder(encoder_options):
     return encoder
 
 
-def get_experiment_dir(root_dir):
+def get_experiment_dir(root_dir, description=None):
     os.makedirs(root_dir, exist_ok=True)
-    exp_nums = [int(subdir[3:]) for subdir in os.listdir(root_dir)]
+    exp_nums = [int(subdir[3:]) if '_' not in subdir else int(subdir.split('_')[0][3:]) for subdir in os.listdir(root_dir)]
     max_exp_num = max(exp_nums) if len(exp_nums) > 0 else 0
-    return os.path.join(root_dir, f'exp{max_exp_num+1}')
+    exp_name = f'exp{max_exp_num+1}' if description is None else f'exp{max_exp_num+1}_{description}'
+    return os.path.join(root_dir, exp_name)

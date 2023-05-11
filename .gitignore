@@ -1,2 +1,5 @@
 ckpt/
 model_output/
+ocr_invoice/
+text.txt
+untitled.py
